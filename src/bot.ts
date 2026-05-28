@@ -7,11 +7,11 @@ import { VectorStore } from './vectorStore';
 
 dotenv.config();
 
-const botToken = process.env.TELEGRAM_BOT_TOKEN;
+const botToken = process.env.TELEGRAM_BOT_TOKEN || process.env.BOT_TOKEN;
 const geminiApiKey = process.env.GEMINI_API_KEY;
 
 if (!botToken || !geminiApiKey) {
-  console.error("Ошибка: Укажи TELEGRAM_BOT_TOKEN и GEMINI_API_KEY в .env");
+  console.error("Ошибка: Укажи TELEGRAM_BOT_TOKEN (или BOT_TOKEN) и GEMINI_API_KEY");
   process.exit(1);
 }
 
