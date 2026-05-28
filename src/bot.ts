@@ -5,12 +5,14 @@ import * as dotenv from 'dotenv';
 import * as path from 'path';
 import { VectorStore } from './vectorStore';
 
-dotenv.config();
+dotenv.config({ override: true });
 
-const botToken = process.env.TELEGRAM_BOT_TOKEN || process.env.BOT_TOKEN;
-const geminiApiKey = process.env.GEMINI_API_KEY;
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
+const botToken = (process.env.TELEGRAM_BOT_TOKEN || process.env.BOT_TOKEN)?.trim();
+const geminiApiKey = process.env.GEMINI_API_KEY?.trim();
+const supabaseUrl = process.env.SUPABASE_URL?.trim();
+const supabaseKey = (process.env.SUPABASE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY)?.trim();
+
+console.log('Используемый API-ключ Gemini:', geminiApiKey ? `${geminiApiKey.slice(0, 6)}...${geminiApiKey.slice(-6)} (длина ${geminiApiKey.length})` : 'ОТСУТСТВУЕТ');
 
 let bot: Telegraf;
 let genAI: GoogleGenerativeAI;
