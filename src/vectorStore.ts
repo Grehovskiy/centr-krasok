@@ -123,16 +123,22 @@ export class VectorStore {
 
   // Вспомогательные функции
   private splitIntoChunks(text: string, chunkSize: number): string[] {
+    // Если это каталог товаров (есть разделитель '---'), режем строго по товарам
+    if (text.includes('\n---')) {
+      return text.split(/\n---+\n?/).map(c => c.trim()).filter(c => c.length > 50);
+    }
+
+    // Для обычных текстов (about.txt, contacts.txt) используем классическую нарезку
     const chunks: string[] = [];
     const overlap = 250;
 
     let i = 0;
     while (i < text.length) {
       const chunk = text.slice(i, i + chunkSize);
-      chunks.push(chunk);
+      chunks.push(chunk.trim());
       i += (chunkSize - overlap);
       if (i + overlap >= text.length) break;
     }
-    return chunks;
+    return chunks.filter(c => c.length > 50);
   }
 }
