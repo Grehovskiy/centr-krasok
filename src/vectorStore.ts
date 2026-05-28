@@ -2,7 +2,9 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import * as fs from 'fs';
 import * as path from 'path';
-import ws from 'ws';
+// @ts-ignore
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const ws = require('ws');
 
 interface Chunk {
   text: string;
