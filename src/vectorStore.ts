@@ -1,21 +1,34 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { pipeline } from '@xenova/transformers';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import * as fs from 'fs';
 import * as path from 'path';
 
 interface Chunk {
   text: string;
   sourceFile: string;
-  embedding: number[];
 }
 
 export class VectorStore {
-  private chunks: Chunk[] = [];
-  private genAI: GoogleGenerativeAI;
-  private embeddingModel: any;
+  private extractor: any = null;
+  private supabase: SupabaseClient;
 
-  constructor(apiKey: string) {
-    this.genAI = new GoogleGenerativeAI(apiKey);
-    this.embeddingModel = this.genAI.getGenerativeModel({ model: "gemini-embedding-001" });
+  constructor(geminiApiKey: string, supabaseUrl: string, supabaseKey: string) {
+    // geminiApiKey больше не нужен, но оставляем в конструкторе, чтобы не ломать bot.ts
+    this.supabase = createClient(supabaseUrl, supabaseKey);
+  }
+
+  private async getExtractor() {
+    if (!this.extractor) {
+      console.log('Загрузка модели Xenova/paraphrase-multilingual-mpnet-base-v2 (768 вектор)...');
+      this.extractor = await pipeline('feature-extraction', 'Xenova/paraphrase-multilingual-mpnet-base-v2');
+    }
+    return this.extractor;
+  }
+
+  private async getEmbedding(text: string, isQuery = false): Promise<number[]> {
+    const extractor = await this.getExtractor();
+    const output = await extractor(text, { pooling: 'mean', normalize: true });
+    return Array.from(output.data);
   }
 
   // Загрузка и нарезка текстовых файлов
@@ -29,9 +42,24 @@ export class VectorStore {
     const files = fs.readdirSync(dirPath).filter(f => f.endsWith('.txt'));
     
     for (const file of files) {
-      const content = fs.readFileSync(path.join(dirPath, file), 'utf-8');
+      // Проверяем, есть ли уже этот файл в базе
+      const { data: existingData, error: countError } = await this.supabase
+        .from('center_karasok_bot_documents')
+        .select('id')
+        .eq('source_file', file)
+        .limit(1);
+        
+      if (countError) {
+        console.error(`Ошибка проверки файла ${file}:`, countError);
+        continue;
+      }
       
-      // Уменьшаем размер чанка до 700 символов для более точного поиска
+      if (existingData && existingData.length > 0) {
+        console.log(`Файл ${file} уже есть в базе. Пропускаем.`);
+        continue;
+      }
+
+      const content = fs.readFileSync(path.join(dirPath, file), 'utf-8');
       const chunkTexts = this.splitIntoChunks(content, 700);
       
       console.log(`Векторизация файла ${file} (${chunkTexts.length} чанков)...`);
@@ -40,40 +68,47 @@ export class VectorStore {
         if (text.trim().length < 50) continue; // пропускаем мусор
         
         try {
-          const result = await this.embeddingModel.embedContent(text);
-          const embedding = result.embedding.values;
+          const embedding = await this.getEmbedding(text, false);
           
-          this.chunks.push({
-            text,
-            sourceFile: file,
-            embedding
-          });
+          const { error } = await this.supabase
+            .from('center_karasok_bot_documents')
+            .insert({
+              content: text,
+              source_file: file,
+              embedding
+            });
+            
+          if (error) {
+             console.error('Ошибка записи вектора в Supabase:', error);
+          }
         } catch (error) {
           console.error('Ошибка получения вектора:', error);
         }
       }
     }
-    console.log(`✅ Векторная база загружена. Всего чанков: ${this.chunks.length}`);
+    console.log(`✅ Синхронизация с Supabase завершена.`);
   }
 
   // Поиск ближайших векторов
   public async search(query: string, topK: number = 3): Promise<Chunk[]> {
-    if (this.chunks.length === 0) return [];
-
     try {
-      const result = await this.embeddingModel.embedContent(query);
-      const queryEmbedding = result.embedding.values;
+      const queryEmbedding = await this.getEmbedding(query, true);
 
-      // Считаем косинусное сходство
-      const scoredChunks = this.chunks.map(chunk => ({
-        chunk,
-        score: this.cosineSimilarity(queryEmbedding, chunk.embedding)
+      const { data, error } = await this.supabase.rpc('match_center_karasok_bot_documents', {
+        query_embedding: queryEmbedding,
+        match_threshold: 0.5, // Порог сходства
+        match_count: topK
+      });
+
+      if (error) {
+        console.error('Ошибка RPC поиска:', error);
+        return [];
+      }
+
+      return data.map((d: any) => ({
+        text: d.content,
+        sourceFile: d.source_file
       }));
-
-      // Сортируем по убыванию
-      scoredChunks.sort((a, b) => b.score - a.score);
-
-      return scoredChunks.slice(0, topK).map(s => s.chunk);
     } catch (error) {
       console.error('Ошибка поиска:', error);
       return [];
@@ -90,20 +125,8 @@ export class VectorStore {
       const chunk = text.slice(i, i + chunkSize);
       chunks.push(chunk);
       i += (chunkSize - overlap);
-      if (i + overlap >= text.length) break; // избегаем слишком маленьких чанков на конце
+      if (i + overlap >= text.length) break;
     }
     return chunks;
-  }
-
-  private cosineSimilarity(vecA: number[], vecB: number[]): number {
-    let dotProduct = 0;
-    let normA = 0;
-    let normB = 0;
-    for (let i = 0; i < vecA.length; i++) {
-      dotProduct += vecA[i] * vecB[i];
-      normA += vecA[i] * vecA[i];
-      normB += vecB[i] * vecB[i];
-    }
-    return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
   }
 }

@@ -9,21 +9,23 @@ dotenv.config();
 
 const botToken = process.env.TELEGRAM_BOT_TOKEN || process.env.BOT_TOKEN;
 const geminiApiKey = process.env.GEMINI_API_KEY;
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 let bot: Telegraf;
 let genAI: GoogleGenerativeAI;
 let vectorStore: VectorStore;
 const dataDir = path.join(__dirname, '../data');
 
-if (!botToken || !geminiApiKey) {
-  console.error("КРИТИЧЕСКАЯ ОШИБКА: Отсутствуют переменные окружения TELEGRAM_BOT_TOKEN (или BOT_TOKEN) или GEMINI_API_KEY!");
+if (!botToken || !geminiApiKey || !supabaseUrl || !supabaseKey) {
+  console.error("КРИТИЧЕСКАЯ ОШИБКА: Отсутствуют переменные окружения BOT_TOKEN, GEMINI_API_KEY, SUPABASE_URL или SUPABASE_KEY!");
   setInterval(() => {
     console.log("Контейнер удерживается активным. Проверь переменные окружения в панели Coolify!");
   }, 10000);
 } else {
   bot = new Telegraf(botToken);
   genAI = new GoogleGenerativeAI(geminiApiKey);
-  vectorStore = new VectorStore(geminiApiKey);
+  vectorStore = new VectorStore(geminiApiKey, supabaseUrl, supabaseKey);
 }
 
 // Хранилище сессий для контекста диалога (in-memory)
@@ -92,9 +94,9 @@ ${contextText}
       const result = await model.generateContent({
         contents: sessions[chatId]
       });
-      
+
       let replyText = result.response.text() || "Ошибка генерации.";
-      
+
       // Программная очистка от звездочек
       replyText = replyText.replace(/\*/g, '');
 
