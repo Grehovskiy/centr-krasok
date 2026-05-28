@@ -31,9 +31,8 @@ export class VectorStore {
     for (const file of files) {
       const content = fs.readFileSync(path.join(dirPath, file), 'utf-8');
       
-      // Простая нарезка: делим по переносам строк или тупо кусками по 500 символов
-      // Так как после парсинга с cheerio у нас сплошной текст, порежем по 1000 символов
-      const chunkTexts = this.splitIntoChunks(content, 1000);
+      // Уменьшаем размер чанка до 700 символов для более точного поиска
+      const chunkTexts = this.splitIntoChunks(content, 700);
       
       console.log(`Векторизация файла ${file} (${chunkTexts.length} чанков)...`);
       
@@ -84,7 +83,7 @@ export class VectorStore {
   // Вспомогательные функции
   private splitIntoChunks(text: string, chunkSize: number): string[] {
     const chunks: string[] = [];
-    const overlap = 200;
+    const overlap = 250;
     
     let i = 0;
     while (i < text.length) {
