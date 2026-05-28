@@ -2,6 +2,7 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import * as fs from 'fs';
 import * as path from 'path';
+import ws from 'ws';
 
 interface Chunk {
   text: string;
@@ -14,7 +15,9 @@ export class VectorStore {
 
   constructor(geminiApiKey: string, supabaseUrl: string, supabaseKey: string) {
     // geminiApiKey больше не нужен, но оставляем в конструкторе, чтобы не ломать bot.ts
-    this.supabase = createClient(supabaseUrl, supabaseKey);
+    this.supabase = createClient(supabaseUrl, supabaseKey, {
+      realtime: { transport: ws }
+    });
   }
 
   private async getExtractor() {
