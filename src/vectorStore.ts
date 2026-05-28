@@ -84,8 +84,14 @@ export class VectorStore {
   // Вспомогательные функции
   private splitIntoChunks(text: string, chunkSize: number): string[] {
     const chunks: string[] = [];
-    for (let i = 0; i < text.length; i += chunkSize) {
-      chunks.push(text.slice(i, i + chunkSize));
+    const overlap = 200;
+    
+    let i = 0;
+    while (i < text.length) {
+      const chunk = text.slice(i, i + chunkSize);
+      chunks.push(chunk);
+      i += (chunkSize - overlap);
+      if (i + overlap >= text.length) break; // избегаем слишком маленьких чанков на конце
     }
     return chunks;
   }
