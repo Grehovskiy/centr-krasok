@@ -26,18 +26,29 @@ if (!botToken || !geminiApiKey) {
   vectorStore = new VectorStore(geminiApiKey);
 }
 
+// Хранилище сессий для контекста диалога (in-memory)
+const sessions: { [chatId: number]: { role: string; parts: { text: string }[] }[] } = {};
+
 async function startBot() {
   if (!bot) return;
   await vectorStore.loadFromDirectory(dataDir);
 
   bot.start((ctx) => {
+    const chatId = ctx.chat.id;
+    sessions[chatId] = []; // Очищаем историю при старте
     ctx.reply('Привет! Я AI-ассистент Centr-Krasok. Что тебя интересует? (Услуги, адреса, каталог)');
   });
 
   bot.on(message('text'), async (ctx) => {
+    const chatId = ctx.chat.id;
     const userText = ctx.message.text;
 
     try {
+      // Инициализируем историю, если её нет
+      if (!sessions[chatId]) {
+        sessions[chatId] = [];
+      }
+
       // Ищем релевантный контекст
       const relevantChunks = await vectorStore.search(userText, 3);
 
@@ -62,11 +73,26 @@ ${contextText}
         systemInstruction: systemPrompt
       });
 
-      const result = await model.generateContent(userText);
+      // Добавляем сообщение пользователя в историю
+      sessions[chatId].push({ role: 'user', parts: [{ text: userText }] });
+
+      // Запускаем генерацию с учетом истории
+      const result = await model.generateContent({
+        contents: sessions[chatId]
+      });
+      
       let replyText = result.response.text() || "Ошибка генерации.";
       
       // Программная очистка от звездочек
       replyText = replyText.replace(/\*/g, '');
+
+      // Добавляем ответ модели в историю
+      sessions[chatId].push({ role: 'model', parts: [{ text: replyText }] });
+
+      // Ограничиваем историю последних 8 сообщений
+      if (sessions[chatId].length > 8) {
+        sessions[chatId] = sessions[chatId].slice(sessions[chatId].length - 8);
+      }
 
       await ctx.reply(replyText);
 
