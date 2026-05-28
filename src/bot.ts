@@ -10,19 +10,24 @@ dotenv.config();
 const botToken = process.env.TELEGRAM_BOT_TOKEN || process.env.BOT_TOKEN;
 const geminiApiKey = process.env.GEMINI_API_KEY;
 
-if (!botToken || !geminiApiKey) {
-  console.error("Ошибка: Укажи TELEGRAM_BOT_TOKEN (или BOT_TOKEN) и GEMINI_API_KEY");
-  process.exit(1);
-}
-
-const bot = new Telegraf(botToken);
-const genAI = new GoogleGenerativeAI(geminiApiKey);
-
-// Инициализация Векторной Базы
-const vectorStore = new VectorStore(geminiApiKey);
+let bot: Telegraf;
+let genAI: GoogleGenerativeAI;
+let vectorStore: VectorStore;
 const dataDir = path.join(__dirname, '../data');
 
+if (!botToken || !geminiApiKey) {
+  console.error("КРИТИЧЕСКАЯ ОШИБКА: Отсутствуют переменные окружения TELEGRAM_BOT_TOKEN (или BOT_TOKEN) или GEMINI_API_KEY!");
+  setInterval(() => {
+    console.log("Контейнер удерживается активным. Проверь переменные окружения в панели Coolify!");
+  }, 10000);
+} else {
+  bot = new Telegraf(botToken);
+  genAI = new GoogleGenerativeAI(geminiApiKey);
+  vectorStore = new VectorStore(geminiApiKey);
+}
+
 async function startBot() {
+  if (!bot) return;
   await vectorStore.loadFromDirectory(dataDir);
 
   bot.start((ctx) => {
@@ -75,4 +80,9 @@ ${contextText}
   process.once('SIGTERM', () => bot.stop('SIGTERM'));
 }
 
-startBot();
+startBot().catch(err => {
+  console.error("КРИТИЧЕСКАЯ ОШИБКА СТАРТА БОТА:", err);
+  setInterval(() => {
+    console.log("Контейнер удерживается активным для диагностики...");
+  }, 10000);
+});
