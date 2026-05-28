@@ -1,4 +1,4 @@
-import { pipeline } from '@xenova/transformers';
+
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -20,6 +20,7 @@ export class VectorStore {
   private async getExtractor() {
     if (!this.extractor) {
       console.log('Загрузка модели Xenova/paraphrase-multilingual-mpnet-base-v2 (768 вектор)...');
+      const { pipeline } = await import('@xenova/transformers');
       this.extractor = await pipeline('feature-extraction', 'Xenova/paraphrase-multilingual-mpnet-base-v2');
     }
     return this.extractor;
@@ -40,7 +41,7 @@ export class VectorStore {
     }
 
     const files = fs.readdirSync(dirPath).filter(f => f.endsWith('.txt'));
-    
+
     for (const file of files) {
       // Проверяем, есть ли уже этот файл в базе
       const { data: existingData, error: countError } = await this.supabase
@@ -48,12 +49,12 @@ export class VectorStore {
         .select('id')
         .eq('source_file', file)
         .limit(1);
-        
+
       if (countError) {
         console.error(`Ошибка проверки файла ${file}:`, countError);
         continue;
       }
-      
+
       if (existingData && existingData.length > 0) {
         console.log(`Файл ${file} уже есть в базе. Пропускаем.`);
         continue;
@@ -61,15 +62,15 @@ export class VectorStore {
 
       const content = fs.readFileSync(path.join(dirPath, file), 'utf-8');
       const chunkTexts = this.splitIntoChunks(content, 700);
-      
+
       console.log(`Векторизация файла ${file} (${chunkTexts.length} чанков)...`);
-      
+
       for (const text of chunkTexts) {
         if (text.trim().length < 50) continue; // пропускаем мусор
-        
+
         try {
           const embedding = await this.getEmbedding(text, false);
-          
+
           const { error } = await this.supabase
             .from('center_karasok_bot_documents')
             .insert({
@@ -77,9 +78,9 @@ export class VectorStore {
               source_file: file,
               embedding
             });
-            
+
           if (error) {
-             console.error('Ошибка записи вектора в Supabase:', error);
+            console.error('Ошибка записи вектора в Supabase:', error);
           }
         } catch (error) {
           console.error('Ошибка получения вектора:', error);
@@ -119,7 +120,7 @@ export class VectorStore {
   private splitIntoChunks(text: string, chunkSize: number): string[] {
     const chunks: string[] = [];
     const overlap = 250;
-    
+
     let i = 0;
     while (i < text.length) {
       const chunk = text.slice(i, i + chunkSize);
