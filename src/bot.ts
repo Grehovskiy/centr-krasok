@@ -12,7 +12,7 @@ const geminiApiKey = process.env.GEMINI_API_KEY?.trim();
 const supabaseUrl = process.env.SUPABASE_URL?.trim();
 const supabaseKey = (process.env.SUPABASE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY)?.trim();
 
-console.log('Используемый API-ключ Gemini:', geminiApiKey ? `${geminiApiKey.slice(0, 6)}...${geminiApiKey.slice(-6)} (длина ${geminiApiKey.length})` : 'ОТСУТСТВУЕТ');
+console.log('Gemini API key:', geminiApiKey ? `${geminiApiKey.slice(0, 6)}...${geminiApiKey.slice(-6)} (length ${geminiApiKey.length})` : 'missing');
 
 let bot: Telegraf;
 let genAI: GoogleGenerativeAI;
@@ -20,9 +20,9 @@ let vectorStore: VectorStore;
 const dataDir = path.join(__dirname, '../data');
 
 if (!botToken || !geminiApiKey || !supabaseUrl || !supabaseKey) {
-  console.error("КРИТИЧЕСКАЯ ОШИБКА: Отсутствуют переменные окружения BOT_TOKEN, GEMINI_API_KEY, SUPABASE_URL или SUPABASE_KEY!");
+  console.error('Critical error: missing BOT_TOKEN, GEMINI_API_KEY, SUPABASE_URL or SUPABASE_KEY.');
   setInterval(() => {
-    console.log("Контейнер удерживается активным. Проверь переменные окружения в панели Coolify!");
+    console.log('Container is alive. Check environment variables in Coolify.');
   }, 10000);
 } else {
   bot = new Telegraf(botToken);
@@ -30,8 +30,71 @@ if (!botToken || !geminiApiKey || !supabaseUrl || !supabaseKey) {
   vectorStore = new VectorStore(geminiApiKey, supabaseUrl, supabaseKey);
 }
 
-// Хранилище сессий для контекста диалога (in-memory)
 const sessions: { [chatId: number]: { role: string; parts: { text: string }[] }[] } = {};
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function formatTelegramReply(text: string): string {
+  const escapedText = escapeHtml(text);
+  const linkRegex = /Ссылка:\s*(https?:\/\/[^\s<]+)/g;
+  return escapedText.replace(linkRegex, 'Подробнее: <a href="$1">карточка товара</a>');
+}
+
+function getLineValue(text: string, label: string): string | null {
+  const line = text
+    .split('\n')
+    .find(item => item.trim().startsWith(label));
+
+  return line ? line.slice(label.length).trim() : null;
+}
+
+function isDiscountQuery(text: string): boolean {
+  const normalized = text.toLowerCase().replace(/ё/g, 'е');
+  return normalized.includes('скид') || normalized.includes('акци') || normalized.includes('распродаж');
+}
+
+function buildFallbackReply(chunks: { text: string }[], mode: 'products' | 'discounts' = 'products'): string {
+  const products = chunks
+    .map(chunk => ({
+      title: getLineValue(chunk.text, 'Товар:'),
+      price: getLineValue(chunk.text, 'Цена:'),
+      link: getLineValue(chunk.text, 'Ссылка:')
+    }))
+    .filter(product => product.title && product.price)
+    .slice(0, 5);
+
+  if (products.length === 0) {
+    return 'Нашел похожие позиции в базе, но сейчас не смог красиво собрать ответ. Лучше передам менеджеру, он быстро проверит цену и наличие.';
+  }
+
+  const lines = [
+    mode === 'discounts'
+      ? 'Да, есть товары со скидкой. Вот несколько актуальных вариантов:'
+      : 'Нашел в базе такие варианты:'
+  ];
+
+  for (const [index, product] of products.entries()) {
+    lines.push('');
+    lines.push(`${index + 1}. ${product.title}`);
+    lines.push(`Цена: ${product.price}`);
+    if (product.link) {
+      lines.push(`Ссылка: ${product.link}`);
+    }
+  }
+
+  lines.push('');
+  lines.push(
+    mode === 'discounts'
+      ? 'Акционных позиций больше — могу передать менеджеру, чтобы он подобрал самые выгодные варианты под вашу задачу.'
+      : 'Ассортимент больше — могу передать менеджеру, чтобы подобрать точный вариант под задачу.'
+  );
+  return lines.join('\n');
+}
 
 async function startBot() {
   if (!bot) return;
@@ -39,8 +102,8 @@ async function startBot() {
 
   bot.start((ctx) => {
     const chatId = ctx.chat.id;
-    sessions[chatId] = []; // Очищаем историю при старте
-    ctx.reply('Привет! Я AI-ассистент Centr-Krasok. Что тебя интересует? (Услуги, адреса, каталог)');
+    sessions[chatId] = [];
+    ctx.reply('Привет! Я AI-ассистент Центра красок №1. Что Вас интересует?');
   });
 
   bot.on(message('text'), async (ctx) => {
@@ -48,12 +111,10 @@ async function startBot() {
     const userText = ctx.message.text;
 
     try {
-      // Инициализируем историю, если её нет
       if (!sessions[chatId]) {
         sessions[chatId] = [];
       }
 
-      // Формируем обогащенный запрос для поиска на основе контекста диалога
       let searchQuery = userText;
       if (sessions[chatId] && sessions[chatId].length > 0) {
         const userHistory = sessions[chatId]
@@ -64,81 +125,96 @@ async function startBot() {
         }
       }
 
-      // Ищем релевантный контекст по обогащенному запросу
-      const relevantChunks = await vectorStore.search(searchQuery, 3);
+      const discountQuery = isDiscountQuery(userText);
+      const relevantChunks = discountQuery
+        ? await vectorStore.searchDiscounts(5)
+        : await vectorStore.search(searchQuery, 5);
 
-      let contextText = "Нет данных.";
-      if (relevantChunks.length > 0) {
-        contextText = relevantChunks.map(c => `[Источник: ${c.sourceFile}]\n${c.text}`).join('\n\n');
+      if (relevantChunks.length === 0) {
+        const replyText = 'Не нашел точных товаров в базе по вашему запросу. Лучше передам менеджеру, чтобы он быстро проверил наличие и цену.';
+        sessions[chatId].push({ role: 'user', parts: [{ text: userText }] });
+        sessions[chatId].push({ role: 'model', parts: [{ text: replyText }] });
+
+        if (sessions[chatId].length > 8) {
+          sessions[chatId] = sessions[chatId].slice(sessions[chatId].length - 8);
+        }
+
+        await ctx.reply(formatTelegramReply(replyText), { parse_mode: 'HTML' });
+        return;
       }
 
+      const contextText = relevantChunks
+        .map(c => `[Источник: ${c.sourceFile}]\n${c.text}`)
+        .join('\n\n');
+
       const systemPrompt = `
-Ты — профессиональная, умная и обаятельная девушка-консультант (AI-ассистент) компании "Центр Красок №1".
-Твоя задача — помогать клиентам с выбором товаров, отвечать на вопросы о наличии, ценах и характеристиках.
+Ты — AI-консультант "Центр Красок №1".
 
-Говори от женского лица (используй женские глаголы и окончания: "готова помочь", "посмотрела", "посоветовала бы" и т.д.). Общайся дружелюбно, вежливо и вовлекающе.
-
-Контекст из базы знаний:
+Данные:
 ${contextText}
 
-ИНСТРУКЦИИ ПО ДИАЛОГУ И КОНТЕКСТУ:
-1. Опирайся на предоставленный контекст базы знаний.
-2. ИСПОЛЬЗУЙ ИСТОРИЮ ДИАЛОГА для связи контекста! Если пользователь задает уточняющий вопрос (например: "а сейчас?", "сколько стоит?", "а есть другой цвет?", "какой остаток?"), пойми из истории переписки, о каком именно товаре идет речь, и ответь на основе характеристик этого товара из истории или предоставленного контекста. Не тупи и не говори "я не нашел информацию", если этот товар обсуждался строкой выше!
-3. Ты можешь поддерживать легкий, непринужденный диалог (спросить "как дела?", пошутить, ответить на простые вежливые реплики), но ОБЯЗАТЕЛЬНО мягко переводи разговор на наши товары, помощь в подборе краски, оформление покупки или предложи переключить на менеджера. Каждая твоя реплика должна вести клиента к сделке или целевому действию!
-4. Если ответа действительно нет ни в истории, ни в контексте, вежливо скажи: "К сожалению, я не нашла этой информации. Хотите, я переключу вас на нашего менеджера?"
-5. Отвечай кратко, профессионально и по делу.
-6. НИКОГДА не используй символы * или ** для форматирования. Пиши чистым текстом.
-7. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО называть точные цифры остатков (например, "1391 шт"). Если остаток > 0, говори "Да, товар есть в наличии". Если 0 или товара нет в контексте, говори "К сожалению, сейчас этого товара нет в наличии".
-8. ОБЯЗАТЕЛЬНО называй цену товара в KZT, если она есть в контексте или истории обсуждения этого товара.
-9. ЗАПРЕЩЕНО здороваться в каждом сообщении. Поприветствуй пользователя только один раз в начале диалога.
+ПРАВИЛА:
+1. Отвечай только на основе предоставленного контекста.
+2. Если в контексте есть строки "Товар:" и "Цена:" — перечисли до 5 подходящих товаров с ценами в KZT. Если найдено 5 товаров, покажи все 5. Если найдено меньше — покажи все найденные.
+3. Не говори, что товара нет, если в контексте есть похожие варианты. Для запроса "глянцевая краска" варианты "п/глянц", "полуглянцевая" и "глянц" считаются релевантными. Скажи честно: "Есть полуглянцевые варианты".
+4. Менеджера предлагай только после списка товаров или когда в контексте вообще нет подходящих товаров.
+5. Запрещено:
+   - Использовать символы * и **.
+   - Называть точные цифры остатков.
+   - Здороваться в каждом сообщении.
+   - Давать общие рассуждения вместо товаров и цен.
+6. Если у товара есть ссылка, можешь написать ее строкой "Ссылка: URL" — код сам красиво оформит ее в Telegram.
+7. Если вопрос про скидки, акции или распродажу — отвечай только про товары со старой ценой. Не пиши фразу про ассортимент; вместо этого напиши: "Акционных позиций больше — могу передать менеджеру, чтобы он подобрал самые выгодные варианты под вашу задачу."
+8. Для обычного товарного подбора после списка добавляй короткую фразу: "Ассортимент больше — могу передать менеджеру, чтобы подобрать точный вариант под задачу."
+9. Отвечай кратко, профессионально и по делу.
+
+Цель — помочь купить: показать варианты, цену и предложить оформить или уточнить у менеджера.
 `;
 
-
       const model = genAI.getGenerativeModel({
-        model: "gemini-3.5-flash",
+        model: 'gemini-3.5-flash',
         systemInstruction: systemPrompt
       });
 
-      // Добавляем сообщение пользователя в историю
       sessions[chatId].push({ role: 'user', parts: [{ text: userText }] });
 
-      // Запускаем генерацию с учетом истории
-      const result = await model.generateContent({
-        contents: sessions[chatId]
-      });
+      let replyText: string;
+      try {
+        const result = await model.generateContent({
+          contents: sessions[chatId]
+        });
 
-      let replyText = result.response.text() || "Ошибка генерации.";
+        replyText = result.response.text() || buildFallbackReply(relevantChunks, discountQuery ? 'discounts' : 'products');
+      } catch (error) {
+        console.error('Gemini Error, using catalog fallback:', error);
+        replyText = buildFallbackReply(relevantChunks, discountQuery ? 'discounts' : 'products');
+      }
 
-      // Программная очистка от звездочек
       replyText = replyText.replace(/\*/g, '');
-
-      // Добавляем ответ модели в историю
       sessions[chatId].push({ role: 'model', parts: [{ text: replyText }] });
 
-      // Ограничиваем историю последних 8 сообщений
       if (sessions[chatId].length > 8) {
         sessions[chatId] = sessions[chatId].slice(sessions[chatId].length - 8);
       }
 
-      await ctx.reply(replyText);
-
+      await ctx.reply(formatTelegramReply(replyText), { parse_mode: 'HTML' });
     } catch (error) {
-      console.error("Bot Error:", error);
-      await ctx.reply("Произошла ошибка. Попробуй позже.");
+      console.error('Bot Error:', error);
+      await ctx.reply('Произошла ошибка. Попробуйте позже.');
     }
   });
 
   bot.launch()
-    .then(() => console.log('🤖 Бот с Local RAG успешно запущен!'))
-    .catch(err => console.error('Ошибка запуска:', err));
+    .then(() => console.log('Bot with Local RAG started successfully.'))
+    .catch(err => console.error('Launch error:', err));
 
   process.once('SIGINT', () => bot.stop('SIGINT'));
   process.once('SIGTERM', () => bot.stop('SIGTERM'));
 }
 
 startBot().catch(err => {
-  console.error("КРИТИЧЕСКАЯ ОШИБКА СТАРТА БОТА:", err);
+  console.error('Critical bot start error:', err);
   setInterval(() => {
-    console.log("Контейнер удерживается активным для диагностики...");
+    console.log('Container is alive for diagnostics.');
   }, 10000);
 });
