@@ -52,8 +52,9 @@ async function startBot() {
 
 ${contextText}
 
-Если ответа в контексте нет, честно скажи: "К сожалению, я не нашел этой информации."
+Если ответа в контексте нет, вежливо извинись и скажи: "К сожалению, я не нашел этой информации. Хотите, я переключу вас на нашего менеджера?"
 Отвечай вежливо и кратко.
+НИКОГДА не используй символы * или ** для форматирования и выделения текста жирным. Пиши только чистым текстом без разметки Markdown.
 `;
 
       const model = genAI.getGenerativeModel({
@@ -62,7 +63,10 @@ ${contextText}
       });
 
       const result = await model.generateContent(userText);
-      const replyText = result.response.text() || "Ошибка генерации.";
+      let replyText = result.response.text() || "Ошибка генерации.";
+      
+      // Программная очистка от звездочек
+      replyText = replyText.replace(/\*/g, '');
 
       await ctx.reply(replyText);
 
