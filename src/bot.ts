@@ -49,8 +49,19 @@ async function startBot() {
         sessions[chatId] = [];
       }
 
-      // Ищем релевантный контекст
-      const relevantChunks = await vectorStore.search(userText, 3);
+      // Формируем обогащенный запрос для поиска на основе контекста диалога
+      let searchQuery = userText;
+      if (sessions[chatId] && sessions[chatId].length > 0) {
+        const userHistory = sessions[chatId]
+          .filter(m => m.role === 'user')
+          .map(m => m.parts[0].text);
+        if (userHistory.length > 0) {
+          searchQuery = `${userHistory[userHistory.length - 1]} ${userText}`;
+        }
+      }
+
+      // Ищем релевантный контекст по обогащенному запросу
+      const relevantChunks = await vectorStore.search(searchQuery, 3);
 
       let contextText = "Нет данных.";
       if (relevantChunks.length > 0) {
